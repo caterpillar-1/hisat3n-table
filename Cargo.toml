@@ -1,0 +1,11 @@
+[package]
+name = "hisat-3n-table"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ascii = "1.1"
+clap = { version = "4.5", features = ["cargo", "derive"] }
+rustc-hash = { version = "2.1", features = ["nightly"] }
+memmap2 = "0.9"
+rayon = "1.10"
