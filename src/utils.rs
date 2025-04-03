@@ -1,6 +1,6 @@
 use ascii::AsciiChar;
 
-pub static BASE_CHARS: [char; 4] = ['A', 'T', 'C', 'G'];
+pub static BASE_CHARS: [AsciiChar; 4] = [AsciiChar::A, AsciiChar::T, AsciiChar::C, AsciiChar::G];
 
 #[inline]
 pub fn asc2dnacomp(ch: AsciiChar) -> AsciiChar {

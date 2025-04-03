@@ -14,14 +14,16 @@ mod utils;
 
 use position::Position;
 use task::{Task, TaskIter, TaskResult};
+use utils::asc2dnacomp;
 
 use std::{path::Path, sync::{mpsc, LazyLock}};
+use anyhow::Result;
 use memmap2::{Advice, Mmap};
 use rayon::{iter::{ParallelBridge, ParallelIterator}, ThreadPoolBuilder};
 use clap::Parser;
 
 use std::{fs::File, path::PathBuf};
-use ascii::{AsAsciiStr, AsciiChar, AsciiStr};
+use ascii::{AsAsciiStr, AsciiChar, AsciiStr, ToAsciiChar};
 use std::io::Write;
 
 #[derive(clap::Parser, Debug)]
@@ -47,23 +49,25 @@ struct Arguments {
     output_name: PathBuf,
     #[arg(
         long, 
-        value_parser = |s: &str| -> Result<(char, char), String> {
+        value_parser = |s: &str| -> Result<((AsciiChar, AsciiChar), (AsciiChar, AsciiChar)), String> {
             let s = Vec::from_iter(s.trim().split(','));
             if s.len() != 2 || !s.iter().all(|b| b.len() == 1) {
                 return Err("format error".to_owned())                
             }
             let bases = utils::BASE_CHARS;
-            let from = s[0].chars().next().unwrap();
-            let to = s[1].chars().next().unwrap();
+            let from = s[0].chars().next().unwrap().to_ascii_char().unwrap();
+            let from_comp = asc2dnacomp(from);
+            let to = s[1].chars().next().unwrap().to_ascii_char().unwrap();
+            let to_comp = asc2dnacomp(to);
             if !bases.contains(&from) || !bases.contains(&to) {
                 return Err("no such base (or use uppercase)".to_owned());
             }
-            Ok((from, to))
+            Ok(((from, from_comp), (to, to_comp)))
         },
         help = "the char1 is the nucleotide converted from, the char2 is the nucleotide converted to."
     )]
-    /// (convert_from, convert_to)
-    base_change: (char, char),
+    /// ((convert_from, complement), (convert_to, convert_to_complement))
+    base_change: ((AsciiChar, AsciiChar), (AsciiChar, AsciiChar)),
     #[arg(
         short,
         long,
@@ -134,6 +138,8 @@ fn static_mmap_asciistr(p: &Path) -> &'static AsciiStr {
     &alignment_map.as_ascii_str().unwrap()
 }
 
+// a comprehensive survey shows that LazyLock has no sync overhead after init
+// deref ops after init is just like normal deref ops
 static ALIGN_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.alignment_file));
 static REF_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.reference_file));
 
@@ -169,8 +175,8 @@ fn worker(task: Task) -> Vec<Position> {
     positions
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ThreadPoolBuilder::new().num_threads(ARGS.threads).build_global().unwrap();
+fn main() -> Result<()> {
+    ThreadPoolBuilder::new().num_threads(ARGS.threads).build_global()?;
 
     let (tx, rx) = mpsc::channel();
     let tasks = TaskIter::new(&ALIGN_FILE, &REF_FILE);
@@ -184,11 +190,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tx.send(TaskResult::None).unwrap();
     });
 
-    let mut output = std::io::BufWriter::new(File::create(&ARGS.output_name).unwrap());
+    let mut output = std::io::BufWriter::new(File::create(&ARGS.output_name)?);
     writeln!(output, "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\tunconvertedBaseQualities\tunconvertedBaseCount")?;
 
     loop {
-        let res = rx.recv().unwrap();
+        let res = rx.recv()?;
         match res {
             TaskResult::Some(positions) => {
                 for p in positions {

@@ -144,9 +144,9 @@ impl Iterator for PositionIter {
                             p.strand = Some(AsciiChar::Minus);
                         }
                     } else {
-                        if ch == ARGS.base_change.0 {
+                        if ch == ARGS.base_change.0.0 {
                             p.strand = Some(AsciiChar::Plus);
-                        } else if ch == ARGS.base_change.1 {
+                        } else if ch == ARGS.base_change.1.0 {
                             p.strand = Some(AsciiChar::Minus);
                         }
                     }
