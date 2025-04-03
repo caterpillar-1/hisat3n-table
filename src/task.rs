@@ -9,9 +9,9 @@ use crate::{alignment::AlignmentIter, position::{Position, PositionIter}, ARGS};
 
 
 pub struct Task {
-    dna: &'static AsciiStr,
-    alignments: AlignmentIter,
-    positions: PositionIter,
+    pub dna: &'static AsciiStr,
+    pub alignments: AlignmentIter,
+    pub positions: PositionIter,
 }
 
 pub type TaskResult = Option<Vec<Position>>;
@@ -118,14 +118,15 @@ impl Iterator for TaskIter {
         let mut dna_l: Option<isize> = None; // dna seq location
 
         // Alignment (line) s in this chunk
-        let mut align_count = 0;
+        let mut align_count = 0usize;
         // Position (non-blank char) s in this chunk
-        let mut dna_count = 0;
+        let mut dna_count = 0usize;
 
-        let advance_dna_location_to_align_location = |align_location: isize, dna_lines: &mut Box<dyn Iterator<Item = &AsciiStr>>, dna_location: &mut isize| -> (Option<Range<*const AsciiChar>>, Option<isize>) {
+        let advance_dna_location_to_align_location = |align_location: isize, dna_lines: &mut Box<dyn Iterator<Item = &AsciiStr>>, dna_location: &mut isize, dna_count: &mut usize| -> (Option<Range<*const AsciiChar>>, Option<isize>) {
             // seek to align_location
             while *dna_location < align_location {
                 let dna_line = dna_lines.next().expect("alignment refer to a non-exist location to chromosome");
+                *dna_count += 1;
                 let next_dna_location = *dna_location + dna_line.len() as isize;
 
                 if *dna_location <= align_location && align_location < next_dna_location {
@@ -194,7 +195,7 @@ impl Iterator for TaskIter {
                                 }
                                 None => {
                                     // normally
-                                    (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location);
+                                    (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location, &mut dna_count);
 
                                     assert_matches!(dna_t, Some(_));
 
@@ -232,7 +233,7 @@ impl Iterator for TaskIter {
                             (align_dna, b, 0)
                         };
 
-                        (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, &mut dna_lines, &mut dna_location);
+                        (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, &mut dna_lines, &mut dna_location, &mut dna_count);
 
                         // now dna_t must be set
                         assert_matches!(dna_t, Some(_));
@@ -252,6 +253,7 @@ impl Iterator for TaskIter {
                 }
             }
             
+            align_count += 1;
             match self.align_lines.next() {
                 Some(align_line) => {
                     // a new line in alignment file
@@ -310,7 +312,7 @@ impl Iterator for TaskIter {
                                 } else {
                                     // update ranges!
 
-                                    let (last_dna_t, last_dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location);
+                                    let (last_dna_t, last_dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location, &mut dna_count);
 
                                     match &dna_t {
                                         Some(_) => {

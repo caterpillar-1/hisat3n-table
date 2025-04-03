@@ -21,7 +21,7 @@ use rayon::{iter::{ParallelBridge, ParallelIterator}, ThreadPoolBuilder};
 use clap::Parser;
 
 use std::{fs::File, path::PathBuf};
-use ascii::{AsAsciiStr, AsciiStr};
+use ascii::{AsAsciiStr, AsciiChar, AsciiStr};
 use std::io::Write;
 
 #[derive(clap::Parser, Debug)]
@@ -138,7 +138,35 @@ static ALIGN_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_as
 static REF_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.reference_file));
 
 fn worker(task: Task) -> Vec<Position> {
-    Vec::new()
+    let mut positions = Vec::from_iter(task.positions);
+    assert!(positions.len() > 0);
+
+    let dna_location = positions[0].location;
+    for alignment in task.alignments {
+        if !alignment.mapped || alignment.bases.is_empty() {
+            continue;
+        }
+
+        let align_location = alignment.location;
+
+        for base in &alignment.bases {
+            if base.remove {
+                continue;
+            }
+
+            let index = align_location - dna_location + base.ref_pos;
+            assert!(0 <= index && index < positions.len() as isize);
+            let position = &mut positions[index as usize];
+            
+            if position.strand.is_none() {
+                continue;
+            }
+
+            position.append_base(base, &alignment);
+        }
+    }
+
+    positions
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -159,8 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = std::io::BufWriter::new(File::create(&ARGS.output_name).unwrap());
     writeln!(output, "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\tunconvertedBaseQualities\tunconvertedBaseCount")?;
 
-    while let Ok(p) = rx.recv() {
-        match p {
+    loop {
+        let res = rx.recv().unwrap();
+        match res {
             TaskResult::Some(positions) => {
                 for p in positions {
                     if p.empty() || p.strand.is_none() {
