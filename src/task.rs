@@ -122,7 +122,19 @@ impl Iterator for TaskIter {
         // Position (non-blank char) s in this chunk
         let mut dna_count = 0usize;
 
-        let advance_dna_location_to_align_location = |align_location: isize, dna_lines: &mut Box<dyn Iterator<Item = &AsciiStr>>, dna_location: &mut isize, dna_count: &mut usize| -> (Option<Range<*const AsciiChar>>, Option<isize>) {
+        let advance_dna_location_to_align_location = |align_location: isize, dna_lines: &mut Box<dyn Iterator<Item = &AsciiStr>>, peeked_dna_line: &mut Option<&AsciiStr>, dna_location: &mut isize, dna_count: &mut usize| -> (Option<Range<*const AsciiChar>>, Option<isize>) {
+            match &peeked_dna_line {
+                Some(dna_line) => {
+                    let prev_dna_location = *dna_location - dna_line.len() as isize;
+                    if prev_dna_location <= align_location && align_location < *dna_location {
+                        return (Some(dna_line.as_slice().as_ptr_range()), Some(prev_dna_location));
+                    } else {
+                        *peeked_dna_line = None;
+                    }
+                }
+                None => ()
+            }
+
             // seek to align_location
             while *dna_location < align_location {
                 let dna_line = dna_lines.next().expect("alignment refer to a non-exist location to chromosome");
@@ -136,6 +148,8 @@ impl Iterator for TaskIter {
                     return ret;
                 }
                 *dna_location = next_dna_location;
+
+                assert!(*dna_location <= align_location);
             }
             (None, None)
         };
@@ -173,7 +187,7 @@ impl Iterator for TaskIter {
 
                                     if align_location < prev_dna_location {
                                         cold_path();
-                                        panic!("")
+                                        panic!()
                                     } else if prev_dna_location <= align_location && align_location < *dna_location {
                                         // this chunk starts on the peeked dna line
                                         dna_l = Some(prev_dna_location);
@@ -191,11 +205,10 @@ impl Iterator for TaskIter {
                                         *peeked_dna_line = None;
                                         continue;
                                     }
-
                                 }
                                 None => {
                                     // normally
-                                    (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location, &mut dna_count);
+                                    let (new_dna_t, new_dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, peeked_dna_line, dna_location, &mut dna_count);
 
                                     assert_matches!(dna_t, Some(_));
 
@@ -233,7 +246,9 @@ impl Iterator for TaskIter {
                             (align_dna, b, 0)
                         };
 
-                        (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, &mut dna_lines, &mut dna_location, &mut dna_count);
+                        let mut temp = None;
+
+                        (dna_t, dna_l) = advance_dna_location_to_align_location(align_location, &mut dna_lines, &mut temp, &mut dna_location, &mut dna_count);
 
                         // now dna_t must be set
                         assert_matches!(dna_t, Some(_));
@@ -302,7 +317,7 @@ impl Iterator for TaskIter {
 
                                 // no peeked line
 
-                                assert!(align_location < *dna_location, "the input file is not sorted.");
+                                assert!(align_location >= dna_l.unwrap(), "the input file is not sorted.");
 
                                 // check whether the chunk size is too large (a soft split)
                                 if align_count >= ARGS.align_block_size || dna_count >= ARGS.ref_block_size {
@@ -312,15 +327,18 @@ impl Iterator for TaskIter {
                                 } else {
                                     // update ranges!
 
-                                    let (last_dna_t, last_dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, dna_location, &mut dna_count);
+                                    let (last_dna_t, last_dna_l) = advance_dna_location_to_align_location(align_location, dna_lines, &mut self.peeked_align_line, dna_location, &mut dna_count);
 
                                     match &dna_t {
                                         Some(_) => {
-                                            dna_t.as_mut().unwrap().end = last_dna_t.unwrap().end;
+                                            if last_dna_t.is_some() {
+                                                dna_t.as_mut().unwrap().end = last_dna_t.unwrap().end;
+                                            }
                                         }
                                         None => {
                                             // this should not happen
                                             eprintln!("unexpected branch");
+                                            assert!(last_dna_t.is_some());
                                             cold_path();
                                             (dna_t, dna_l) = (last_dna_t, last_dna_l);
                                         }
