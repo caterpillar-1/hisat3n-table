@@ -153,7 +153,13 @@ impl Iterator for PositionIter {
                         }
                     }
                     self.last_base = Some(ch);
-                    return std::mem::replace(&mut self.last_pos, Some(p));
+                    self.seq = &self.seq[1..];
+                    let ret = std::mem::replace(&mut self.last_pos, Some(p));
+                    if ret.is_none() {
+                        continue;
+                    } else {
+                        return ret;
+                    }
                 }
                 None => { 
                     cold_path();

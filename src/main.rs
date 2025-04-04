@@ -145,6 +145,7 @@ static REF_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asci
 
 fn worker(task: Task) -> Vec<Position> {
     let mut positions = Vec::from_iter(task.positions);
+
     assert!(positions.len() > 0);
 
     let dna_location = positions[0].location;
