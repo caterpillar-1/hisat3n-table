@@ -55,9 +55,9 @@ struct Arguments {
                 return Err("format error".to_owned())                
             }
             let bases = utils::BASE_CHARS;
-            let from = s[0].chars().next().unwrap().to_ascii_char().unwrap();
+            let from = s[0].chars().next().unwrap().to_ascii_char().unwrap().to_ascii_uppercase();
             let from_comp = asc2dnacomp(from);
-            let to = s[1].chars().next().unwrap().to_ascii_char().unwrap();
+            let to = s[1].chars().next().unwrap().to_ascii_char().unwrap().to_ascii_uppercase();
             let to_comp = asc2dnacomp(to);
             if !bases.contains(&from) || !bases.contains(&to) {
                 return Err("no such base (or use uppercase)".to_owned());

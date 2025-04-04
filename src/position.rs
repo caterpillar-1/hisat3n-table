@@ -1,4 +1,5 @@
 use std::{cell::Cell, collections::HashSet, hash::Hash};
+use std::hint::{likely, unlikely, cold_path};
 
 use ascii::{AsciiChar, AsciiStr, AsciiString};
 
@@ -126,10 +127,11 @@ impl Iterator for PositionIter {
         loop {
             match self.seq.first() {
                 Some(AsciiChar::CarriageReturn | AsciiChar::LineFeed | AsciiChar::Space) => {
+                    cold_path();
                     self.seq = &self.seq[1..];
                     continue;
                 }
-                Some(AsciiChar::At) => panic!(),
+                Some(AsciiChar::At) => { cold_path(); panic!() },
                 Some(ch) => {
                     let ch = ch.to_ascii_uppercase();
                     let mut p = Position::new();
@@ -153,13 +155,16 @@ impl Iterator for PositionIter {
                     self.last_base = Some(ch);
                     return std::mem::replace(&mut self.last_pos, Some(p));
                 }
-                None => match &self.last_pos {
-                    Some(_) => {
-                        let _ = std::mem::replace(&mut self.last_base, None);
-                        return std::mem::replace(&mut self.last_pos, None);
+                None => { 
+                    cold_path();
+                    match &self.last_pos {
+                        Some(_) => {
+                            let _ = std::mem::replace(&mut self.last_base, None);
+                            return std::mem::replace(&mut self.last_pos, None);
+                        }
+                        None => return None,
                     }
-                    None => return None,
-                },
+                }
             }
         }
     }

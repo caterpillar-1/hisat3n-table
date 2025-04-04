@@ -126,10 +126,10 @@ impl Alignment {
     }
 
     fn hash_name(name: &AsciiStr) -> usize {
-        let mut r = 0;
-        let a = 63689;
+        let mut r: usize = 0;
+        let a: usize = 63689;
         for i in 0..name.len() {
-            r = (r * a) + name[i] as usize;
+            r = (r.wrapping_mul(a)).wrapping_mul(name[i] as usize);
         }
         r
     }
@@ -223,7 +223,7 @@ impl Alignment {
     fn adjust_pos(&mut self) -> isize {
         let mut read_pos = 0;
         let mut return_pos = 0;
-        let mut seq_length = self.sequence.len();
+        let seq_length = self.sequence.len();
 
         let mut cigar_symbol: AsciiChar = Default::default();
         let mut cigar_len = 0;
@@ -298,8 +298,8 @@ impl Alignment {
         let md_str_len = self.md.len();
         let mut seg = AsciiString::new();
         while Self::md_get_next_segment(self.md, &mut md_start, md_str_len, &mut seg) {
-            let ch = seg.first().unwrap();
-            if ch.is_ascii_digit() {
+            let ref_base = seg.first().unwrap();
+            if ref_base.is_ascii_digit() {
                 let len: usize = seg.as_str().parse().unwrap();
                 for i in 0..len {
                     while self.bases[pos].remove {
@@ -314,16 +314,16 @@ impl Alignment {
                     }
                     pos += 1;
                 }
-            } else if ch.is_alphabetic() {
+            } else if ref_base.is_alphabetic() {
                 while self.bases[pos].remove {
                     pos += 1;
                 }
 
                 if (self.strand == '+'
-                    && ch == ARGS.base_change.0.0
+                    && ref_base == ARGS.base_change.0.0
                     && self.sequence[pos] == ARGS.base_change.1.0)
                     || (self.strand == '-'
-                        && ch == ARGS.base_change.0.1
+                        && ref_base == ARGS.base_change.0.1
                         && self.sequence[pos] == ARGS.base_change.1.1)
                 {
                     self.bases[pos].set_qual(self.quality[pos], true);
@@ -332,7 +332,6 @@ impl Alignment {
                 }
                 pos += 1;
             } else {
-
             }
         }
     }
