@@ -16,7 +16,7 @@ use position::Position;
 use task::{Task, TaskIter, TaskResult};
 use utils::asc2dnacomp;
 
-use std::{path::Path, sync::{mpsc, LazyLock}};
+use std::{hint::cold_path, path::Path, sync::{mpsc, LazyLock}};
 use anyhow::Result;
 use memmap2::{Advice, Mmap};
 use rayon::{iter::{ParallelBridge, ParallelIterator}, ThreadPoolBuilder};
@@ -112,13 +112,13 @@ struct Arguments {
     threads: usize,
     #[arg(
         long,
-        default_value_t = 1000000,
+        default_value_t = 100000,
         help = "max number of Alignment record lines in a Task (1000000)",
     )]
     align_block_size: usize,
     #[arg(
         long,
-        default_value_t = 2000000,
+        default_value_t = 200000,
         help = "max number of chromosome Position s in a Task (2000000)",
     )]
     ref_block_size: usize,
@@ -148,6 +148,9 @@ fn worker(task: Task) -> Vec<Position> {
 
     assert!(positions.len() > 0);
 
+    let mut debug_ignore_count: usize = 0;
+    let mut total_base_count: usize = 0;
+
     let dna_location = positions[0].location;
     for alignment in task.alignments {
         if !alignment.mapped || alignment.bases.is_empty() {
@@ -157,12 +160,20 @@ fn worker(task: Task) -> Vec<Position> {
         let align_location = alignment.location;
 
         for base in &alignment.bases {
+            total_base_count += 1;
+
             if base.remove {
                 continue;
             }
 
             let index = align_location - dna_location + base.ref_pos;
-            assert!(0 <= index && index < positions.len() as isize);
+            // assert!(0 <= index && index < positions.len() as isize, "{index}");
+
+            if !(0..positions.len() as isize).contains(&index) {
+                debug_ignore_count += 1;
+                continue;
+            }
+
             let position = &mut positions[index as usize];
             
             if position.strand.is_none() {
@@ -173,7 +184,11 @@ fn worker(task: Task) -> Vec<Position> {
         }
     }
 
-    positions
+    if debug_ignore_count != 0 {
+        eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
+    }
+
+    positions.into_iter().filter(|x| !(x.empty() || x.strand.is_none())).collect()
 }
 
 fn main() -> Result<()> {
@@ -191,7 +206,8 @@ fn main() -> Result<()> {
         tx.send(TaskResult::None).unwrap();
     });
 
-    let mut output = std::io::BufWriter::new(File::create(&ARGS.output_name)?);
+    let mut output = std::io::BufWriter::with_capacity(1 * 1024 * 1024, File::create(&ARGS.output_name)?);
+
     writeln!(output, "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\tunconvertedBaseQualities\tunconvertedBaseCount")?;
 
     loop {
@@ -199,13 +215,11 @@ fn main() -> Result<()> {
         match res {
             TaskResult::Some(positions) => {
                 for p in positions {
-                    if p.empty() || p.strand.is_none() {
-                        continue;
-                    }
                     writeln!(output, "{}\t{}\t{}\t{}\t{}\t{}\t{}", p.dna, p.location, p.strand.unwrap(), p.converted_qualities, p.converted_qualities.len(), p.unconverted_qualities, p.unconverted_qualities.len())?;
                 }
             }
             TaskResult::None => {
+                cold_path();
                 break;
             }
         }

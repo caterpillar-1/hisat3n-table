@@ -1,7 +1,8 @@
+use std::ops::Index;
 use std::{cell::Cell, collections::HashSet, hash::Hash};
 use std::hint::{likely, unlikely, cold_path};
 
-use ascii::{AsciiChar, AsciiStr, AsciiString};
+use ascii::{AsAsciiStr, AsciiChar, AsciiStr, AsciiString};
 
 use crate::{
     ARGS,
@@ -76,17 +77,19 @@ impl Position {
             if e.converted != id.converted {
                 e.removed.set(true);
                 if e.converted {
-                    self.converted_qualities = self
-                        .converted_qualities
-                        .chars()
-                        .filter(|ch| *ch != base.qual)
-                        .collect();
+                    let i = match self.converted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                    let _ = self.converted_qualities.remove(i);
+                    return false;
                 } else {
-                    self.unconverted_qualities = self
-                        .unconverted_qualities
-                        .chars()
-                        .filter(|ch| *ch != base.qual)
-                        .collect();
+                    let i = match self.unconverted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                    let _ = self.unconverted_qualities.remove(i);
+                    return false;
                 }
             }
             false
@@ -115,8 +118,10 @@ pub struct PositionIter {
 }
 
 impl PositionIter {
+    // location: pass in 0-based location
+    //           internally use 1-based location
     pub fn new(dna: &'static AsciiStr, location: isize, seq: &'static AsciiStr) -> Self {
-        Self { dna, location, seq, last_base: None, last_pos: None }
+        Self { dna, location: location + 1, seq, last_base: None, last_pos: None }
     }
 }
 
@@ -127,11 +132,10 @@ impl Iterator for PositionIter {
         loop {
             match self.seq.first() {
                 Some(AsciiChar::CarriageReturn | AsciiChar::LineFeed | AsciiChar::Space) => {
-                    cold_path();
                     self.seq = &self.seq[1..];
                     continue;
                 }
-                Some(AsciiChar::At) => { cold_path(); panic!() },
+                Some(AsciiChar::At) => { cold_path(); panic!("wrong ref parser impl") },
                 Some(ch) => {
                     let ch = ch.to_ascii_uppercase();
                     let mut p = Position::new();

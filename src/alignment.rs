@@ -60,6 +60,9 @@ impl TryFrom<&'static AsciiStr> for Alignment {
         a.read_name_id = Self::hash_name(s.next().ok_or(())?);
         // 1
         a.flag = s.next().ok_or(())?.as_str().parse().map_err(|_| ())?;
+        a.mapped = (a.flag & 4) == 0;
+        a.paired = (a.flag & 1) != 0;
+
         // 2
         a.dna = s.next().ok_or(())?;
         // 3
@@ -148,7 +151,7 @@ impl Alignment {
         let mut current_index = *start;
         loop {
             if cigar_string[current_index].is_ascii_alphabetic() {
-                *len = (&cigar_string[*start..current_index - *start])
+                *len = (&cigar_string[*start..current_index])
                     .as_str()
                     .parse()
                     .unwrap();
@@ -257,13 +260,13 @@ impl Alignment {
                     }
                 }
                 AsciiChar::M => {
-                    for i in read_pos..read_pos + cigar_len {
+                    for i in read_pos..(read_pos + cigar_len) {
                         self.bases[i].remove = false;
                     }
                     read_pos += cigar_len;
                 }
                 AsciiChar::I => {
-                    for i in read_pos + cigar_len..seq_length {
+                    for i in (read_pos + cigar_len)..seq_length {
                         self.bases[i].ref_pos -= cigar_len as isize;
                     }
                     read_pos += cigar_len;
@@ -301,7 +304,7 @@ impl Alignment {
             let ref_base = seg.first().unwrap();
             if ref_base.is_ascii_digit() {
                 let len: usize = seg.as_str().parse().unwrap();
-                for i in 0..len {
+                for _ in 0..len {
                     while self.bases[pos].remove {
                         pos += 1;
                     }
@@ -362,7 +365,7 @@ impl Iterator for AlignmentIter {
                     }
                     let a = match Alignment::try_from(line) {
                         Ok(a) => a,
-                        Err(e) => {
+                        Err(_) => {
                             eprintln!("'{}' is not a valid Alignment.", line);
                             continue;
                         }
