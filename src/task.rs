@@ -146,13 +146,6 @@ impl TaskIter {
             }
         }
 
-        // assert!(
-        //     dnas.values().all(|t| t
-        //         .chars()
-        //         .all(|ch| ch.is_ascii_alphabetic() || ch.is_ascii_whitespace())),
-        //     "wrong dnas parser impl."
-        // );
-
         Self {
             align_lines: Box::new(align_file.lines()),
             dnas,
@@ -222,7 +215,7 @@ impl TaskIter {
 
         let DnaCacheLine((dna_dna, dna_lines, peeked_dna_line, dna_location)) =
             self.current_dna.as_mut().unwrap();
-        assert_eq!(*dna_dna, align_dna);
+        debug_assert_eq!(*dna_dna, align_dna);
 
         match peeked_dna_line {
             Some(dna_line) => {
@@ -241,8 +234,8 @@ impl TaskIter {
             None => (),
         }
 
-        assert!(align_location >= *dna_location);
-        assert!(peeked_dna_line.is_none());
+        debug_assert!(align_location >= *dna_location);
+        debug_assert!(peeked_dna_line.is_none());
 
         loop {
             let dna_line = match dna_lines.next() {
@@ -275,6 +268,7 @@ impl Iterator for TaskIter {
     fn next(&mut self) -> Option<Self::Item> {
         // we construct a Task from self.dna and these two components
         // 3 components
+        let mut task_dna: Option<&'static AsciiStr> = None;
         let mut align_text: Option<Range<*const AsciiChar>> = None;
         let mut dna_text: Option<Range<*const AsciiChar>> = None; // dna text slice
         let mut dna_location: Option<isize> = None; // dna seq location
@@ -285,13 +279,15 @@ impl Iterator for TaskIter {
         let mut dna_count = 0usize;
 
         fn task_from_components(
+            dnas: &HashMap<AsciiString, &'static AsciiStr>,
             current_dna: &'static AsciiStr,
             align_text: Option<Range<*const AsciiChar>>,
-            dna_text: Option<Range<*const AsciiChar>>,
+            mut dna_text: Option<Range<*const AsciiChar>>,
             dna_location: Option<isize>,
             align_count: usize,
             dna_count: usize
         ) -> Task {
+            dna_text.as_mut().unwrap().end = dnas.get(current_dna).unwrap().as_slice().as_ptr_range().end;
             let t = Task {
                 dna: current_dna,
                 alignments: AlignmentIter::new(
@@ -314,7 +310,8 @@ impl Iterator for TaskIter {
             if align_count >= ARGS.align_block_size || dna_count >= ARGS.ref_block_size {
                 cold_path();
                 return Some(task_from_components(
-                    self.current_dna.as_ref().unwrap().current_dna(),
+                    &self.dnas,
+                    task_dna.unwrap(),
                     align_text,
                     dna_text,
                     dna_location,
@@ -338,7 +335,8 @@ impl Iterator for TaskIter {
                             match align_text {
                                 Some(_) => {
                                     return Some(task_from_components(
-                                        self.current_dna.as_ref().unwrap().current_dna(),
+                                        &self.dnas,
+                                        task_dna.unwrap(),
                                         align_text,
                                         dna_text,
                                         dna_location,
@@ -376,6 +374,7 @@ impl Iterator for TaskIter {
                 if align_text.is_none() {
                     // we are processing the first line of a new chunk rather than the first in the file
                     cold_path();
+                    task_dna = Some(align_dna);
                     align_text = Some(align_line.as_slice().as_ptr_range());
                     dna_text = Some(dna_line.as_slice().as_ptr_range());
                     dna_location = Some(new_dna_location);
@@ -397,6 +396,7 @@ impl Iterator for TaskIter {
                 if align_text.is_none() {
                     // the most rare case: its the first alignment line
                     cold_path();
+                    task_dna = Some(align_dna);
                     align_text = Some(align_line.as_slice().as_ptr_range());
                     dna_text = Some(dna_line.as_slice().as_ptr_range());
                     dna_location = Some(new_dna_location);
@@ -407,7 +407,8 @@ impl Iterator for TaskIter {
                     // on the boundry of areas split by different dna
                     self.peeked_align_line = Some(align_line);
                     return Some(task_from_components(
-                        self.current_dna.as_ref().unwrap().current_dna(),
+                        &self.dnas,
+                        task_dna.unwrap(),
                         align_text,
                         dna_text,
                         dna_location,

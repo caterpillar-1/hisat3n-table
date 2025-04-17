@@ -112,14 +112,14 @@ struct Arguments {
     threads: usize,
     #[arg(
         long,
-        default_value_t = 100000,
-        help = "max number of Alignment record lines in a Task (1000000)",
+        default_value_t = 20000,
+        help = "max number of Alignment record lines in a Task (20000)",
     )]
     align_block_size: usize,
     #[arg(
         long,
-        default_value_t = 200000,
-        help = "max number of chromosome Position s in a Task (2000000)",
+        default_value_t = 20000,
+        help = "max number of chromosome Position s in a Task (20000)",
     )]
     ref_block_size: usize,
 }
@@ -143,24 +143,35 @@ fn static_mmap_asciistr(p: &Path) -> &'static AsciiStr {
 static ALIGN_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.alignment_file));
 static REF_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.reference_file));
 
-fn worker(task: Task) -> Vec<Position> {
-    let mut positions = Vec::from_iter(task.positions);
-
-    assert!(positions.len() > 0);
+fn worker(mut task: Task) -> Vec<Position> {
+    let mut positions = Vec::new();
+    Vec::reserve(&mut positions, task.position_line_count * 80);
+    positions.push(task.positions.next().unwrap());
 
     let mut debug_ignore_count: usize = 0;
     let mut total_base_count: usize = 0;
+    // let first_dna_location: isize = positions.iter().next().unwrap().location;
+    // let mut last_align_location: isize = 0;
+    // let mut first_align_location: isize = 0;
+    // let last_dna_location: isize = positions.iter().last().unwrap().location;
 
     let dna_location = positions[0].location;
-    for alignment in task.alignments {
+
+    for (i, alignment) in task.alignments.enumerate() {
+        // if i == 0 {
+        //     first_align_location = alignment.location;                        
+        // }
+
+        debug_assert_eq!(alignment.dna, task.dna);
+
         if !alignment.mapped || alignment.bases.is_empty() {
             continue;
         }
 
         let align_location = alignment.location;
+        // last_align_location = last_align_location.max(align_location);
 
         for base in &alignment.bases {
-            total_base_count += 1;
 
             if base.remove {
                 continue;
@@ -168,6 +179,19 @@ fn worker(task: Task) -> Vec<Position> {
 
             let index = align_location - dna_location + base.ref_pos;
             // assert!(0 <= index && index < positions.len() as isize, "{index}");
+
+            while positions.last().unwrap().location < align_location + base.ref_pos {
+                positions.push(match task.positions.next() {
+                    Some(p) => p,
+                    None => {
+                        cold_path();
+                        assert!(false);
+                        break;
+                    }
+                })
+            }
+
+            total_base_count += 1;
 
             if !(0..positions.len() as isize).contains(&index) {
                 debug_ignore_count += 1;
@@ -185,6 +209,7 @@ fn worker(task: Task) -> Vec<Position> {
     }
 
     if debug_ignore_count != 0 {
+        // eprintln!("warning: {}/{} bases out-of-range. {} <- {}, {} -> {}", debug_ignore_count, total_base_count, first_align_location, first_dna_location, last_dna_location, last_align_location);
         eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
     }
 
