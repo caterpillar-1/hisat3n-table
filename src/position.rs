@@ -55,7 +55,7 @@ impl Position {
     pub fn new() -> Self {
         Self {
             dna: Default::default(),
-            location: 0,
+            location: -1,
             strand: None,
             converted_qualities: AsciiString::new(),
             unconverted_qualities: AsciiString::new(),
