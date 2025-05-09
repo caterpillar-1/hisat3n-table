@@ -112,7 +112,7 @@ impl Iterator for TaskIter {
                 alignment_count: align_count,
                 position_range: (position_range.start as usize .. position_range.end as usize),
             };
-            eprintln!("{:?}", task);
+            // eprintln!("{:?}", task);
             return task;
         }
 

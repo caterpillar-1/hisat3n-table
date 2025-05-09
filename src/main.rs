@@ -151,7 +151,8 @@ static DNAS: LazyLock<&'static DnaIndex> = LazyLock::new(|| {
 fn worker(task: Task) -> Vec<Position> {
     let mut positions = Vec::new();
     Vec::reserve(&mut positions, task.position_range.len());
-    let mut position_iter = PositionIter::new(&task.dna_name,task.position_range.start as isize, &DNAS.get(task.dna_name).unwrap()[task.position_range.clone()]);
+    let dna_text = DNAS.get(task.dna_name).unwrap();
+    let mut position_iter = PositionIter::new(&task.dna_name,task.position_range.start as isize, &dna_text[task.position_range.start .. dna_text.len()]);
     positions.push(position_iter.next().unwrap());
 
     let mut debug_ignore_count: usize = 0;
@@ -215,7 +216,7 @@ fn worker(task: Task) -> Vec<Position> {
 
     if debug_ignore_count != 0 {
         // eprintln!("warning: {}/{} bases out-of-range. {} <- {}, {} -> {}", debug_ignore_count, total_base_count, first_align_location, first_dna_location, last_dna_location, last_align_location);
-        eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
+        // eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
     }
 
     positions.into_iter().filter(|x| !(x.empty() || x.strand.is_none())).collect()
