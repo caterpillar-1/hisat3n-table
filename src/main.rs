@@ -12,8 +12,9 @@ mod position;
 mod task;
 mod utils;
 
-use position::Position;
-use task::{Task, TaskIter, TaskResult};
+use position::{Position, PositionIter};
+use rmp_serde::from_read;
+use task::{DnaIndex, Task, TaskIter, TaskResult};
 use utils::asc2dnacomp;
 
 use std::{hint::cold_path, path::Path, sync::{mpsc, LazyLock}};
@@ -24,7 +25,7 @@ use clap::Parser;
 
 use std::{fs::File, path::PathBuf};
 use ascii::{AsAsciiStr, AsciiChar, AsciiStr, ToAsciiChar};
-use std::io::Write;
+use std::io::{Write, BufReader};
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
@@ -36,11 +37,11 @@ struct Arguments {
     )]
     alignment_file: PathBuf,
     #[arg(
-        long = "ref",
-        value_name = "refFile",
-        help = "reference file (should be FASTA format)."
+        long = "refIndex",
+        value_name = "refFileIndex",
+        help = "reference file (should be dna_index's output for an FASTA format reference file)."
     )]
-    reference_file: PathBuf,
+    reference_file_index: PathBuf,
     #[arg(
         long,
         value_name = "outputFile",
@@ -141,12 +142,18 @@ fn static_mmap_asciistr(p: &Path) -> &'static AsciiStr {
 // a comprehensive survey shows that LazyLock has no sync overhead after init
 // deref ops after init is just like normal deref ops
 static ALIGN_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.alignment_file));
-static REF_FILE: LazyLock<&'static AsciiStr> = LazyLock::new(|| static_mmap_asciistr(&ARGS.reference_file));
+static DNAS: LazyLock<&'static DnaIndex> = LazyLock::new(|| {
+    let ref_index_file = BufReader::new(File::open(&ARGS.reference_file_index).unwrap());
+    let dnas: Box<DnaIndex> = Box::new(from_read(ref_index_file).unwrap());
+    Box::leak(dnas)
+});
 
-fn worker(mut task: Task) -> Vec<Position> {
+fn worker(task: Task) -> Vec<Position> {
     let mut positions = Vec::new();
-    Vec::reserve(&mut positions, task.position_line_count * 80);
-    positions.push(task.positions.next().unwrap());
+    Vec::reserve(&mut positions, task.position_range.len());
+    let dna_text = DNAS.get(task.dna_name).unwrap();
+    let mut position_iter = PositionIter::new(&task.dna_name,task.position_range.start as isize, &dna_text[task.position_range.start .. dna_text.len()]);
+    positions.push(position_iter.next().unwrap());
 
     let mut debug_ignore_count: usize = 0;
     let mut total_base_count: usize = 0;
@@ -155,14 +162,14 @@ fn worker(mut task: Task) -> Vec<Position> {
     // let mut first_align_location: isize = 0;
     // let last_dna_location: isize = positions.iter().last().unwrap().location;
 
-    let dna_location = positions[0].location;
+    let dna_location = task.position_range.start as isize;
 
     for (i, alignment) in task.alignments.enumerate() {
         // if i == 0 {
         //     first_align_location = alignment.location;                        
         // }
 
-        debug_assert_eq!(alignment.dna, task.dna);
+        debug_assert_eq!(alignment.dna, task.dna_name);
 
         if !alignment.mapped || alignment.bases.is_empty() {
             continue;
@@ -172,7 +179,6 @@ fn worker(mut task: Task) -> Vec<Position> {
         // last_align_location = last_align_location.max(align_location);
 
         for base in &alignment.bases {
-
             if base.remove {
                 continue;
             }
@@ -181,7 +187,7 @@ fn worker(mut task: Task) -> Vec<Position> {
             // assert!(0 <= index && index < positions.len() as isize, "{index}");
 
             while positions.last().unwrap().location < align_location + base.ref_pos {
-                positions.push(match task.positions.next() {
+                positions.push(match position_iter.next() {
                     Some(p) => p,
                     None => {
                         cold_path();
@@ -210,7 +216,7 @@ fn worker(mut task: Task) -> Vec<Position> {
 
     if debug_ignore_count != 0 {
         // eprintln!("warning: {}/{} bases out-of-range. {} <- {}, {} -> {}", debug_ignore_count, total_base_count, first_align_location, first_dna_location, last_dna_location, last_align_location);
-        eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
+        // eprintln!("warning: {}/{} bases out-of-range.", debug_ignore_count, total_base_count);
     }
 
     positions.into_iter().filter(|x| !(x.empty() || x.strand.is_none())).collect()
@@ -220,7 +226,7 @@ fn main() -> Result<()> {
     ThreadPoolBuilder::new().num_threads(ARGS.threads).build_global()?;
 
     let (tx, rx) = mpsc::channel();
-    let tasks = TaskIter::new(&ALIGN_FILE, &REF_FILE);
+    let tasks = TaskIter::new(&ALIGN_FILE);
 
     std::thread::spawn(move || {
         let tx = tx.clone();
