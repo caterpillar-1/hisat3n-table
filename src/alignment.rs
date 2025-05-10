@@ -69,7 +69,7 @@ impl TryFrom<&'static AsciiStr> for Alignment {
         a.location = s.next().ok_or(())?.as_str().parse().map_err(|_| ())?;
         // 4
         a.map_q = s.next().ok_or(())?;
-        a.unique = a.map_q != "1".into_ascii_string().map_err(|_| ())?;
+        a.unique = a.map_q != ("1".into_ascii_string().map_err(|_| ())?);
         // 5
         a.cigar = s.next().ok_or(())?;
         // 6
@@ -132,7 +132,7 @@ impl Alignment {
         let mut r: usize = 0;
         let a: usize = 63689;
         for i in 0..name.len() {
-            r = (r.wrapping_mul(a)).wrapping_mul(name[i] as usize);
+            r = (r.wrapping_mul(a)).wrapping_add(name[i] as usize);
         }
         r
     }

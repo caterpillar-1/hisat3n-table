@@ -87,14 +87,14 @@ impl Position {
                 if self.unique_ids[index].converted {
                     for i in 0..self.converted_qualities.len() {
                         if self.converted_qualities[i] == base.qual {
-                            self.converted_qualities.remove(i);
+                            let _ = self.converted_qualities.remove(i);
                             return false;
                         }
                     }
                 } else {
                     for i in 0..self.converted_qualities.len() {
                         if self.unconverted_qualities[i] == base.qual {
-                            self.unconverted_qualities.remove(i);
+                            let _ = self.unconverted_qualities.remove(i);
                             return false;
                         }
                     }
