@@ -1,8 +1,6 @@
-use std::ops::Index;
-use std::{cell::Cell, collections::HashSet, hash::Hash};
-use std::hint::{likely, unlikely, cold_path};
-
-use ascii::{AsAsciiStr, AsciiChar, AsciiStr, AsciiString};
+use ascii::{AsciiChar, AsciiStr, AsciiString};
+use std::hint::cold_path;
+use std::{cell::Cell, hash::Hash};
 
 use crate::{
     ARGS,
@@ -28,27 +26,13 @@ impl UniqueID {
     }
 }
 
-impl Hash for UniqueID {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.read_name_id.hash(state);
-    }
-}
-
-impl PartialEq for UniqueID {
-    fn eq(&self, other: &Self) -> bool {
-        self.read_name_id == other.read_name_id
-    }
-}
-
-impl Eq for UniqueID {}
-
 pub struct Position {
     pub dna: &'static AsciiStr,
     pub location: isize,
     pub strand: Option<AsciiChar>,
     pub converted_qualities: AsciiString,
     pub unconverted_qualities: AsciiString,
-    pub unique_ids: HashSet<UniqueID>,
+    pub unique_ids: Vec<UniqueID>,
 }
 
 impl Position {
@@ -59,7 +43,7 @@ impl Position {
             strand: None,
             converted_qualities: AsciiString::new(),
             unconverted_qualities: AsciiString::new(),
-            unique_ids: HashSet::default(),
+            unique_ids: Vec::default(),
         }
     }
 
@@ -67,35 +51,102 @@ impl Position {
         self.converted_qualities.is_empty() && self.unconverted_qualities.is_empty()
     }
 
+    fn search_read_name_id(&mut self, read_name_id: usize, start: usize, end: usize) -> usize {
+        if self.unique_ids.is_empty() {
+            return 0;
+        }
+        if start <= end {
+            let middle = (start + end) / 2;
+            if self.unique_ids[middle].read_name_id == read_name_id {
+                return middle;
+            }
+            if self.unique_ids[middle].read_name_id > read_name_id {
+                return self.search_read_name_id(read_name_id, start, middle - 1);
+            }
+            return self.search_read_name_id(read_name_id, middle + 1, end);
+        }
+        return start; // return the bigger one
+    }
+
     fn append_read_name_id(&mut self, base: &PosQuality, a: &Alignment) -> bool {
-        let id = UniqueID::new(a.read_name_id, base.converted, base.qual);
-        let e = self.unique_ids.get_or_insert(id.clone());
-        if e.converted != id.converted {
-            if e.removed.get() {
+        let id_count = self.unique_ids.len();
+        if id_count == 0 || a.read_name_id > self.unique_ids.last().unwrap().read_name_id {
+            self.unique_ids
+                .push(UniqueID::new(a.read_name_id, base.converted, base.qual));
+            return true;
+        }
+        let index = self.search_read_name_id(a.read_name_id, 0, id_count);
+        if self.unique_ids[index].read_name_id == a.read_name_id {
+            // if the new base is consistent with exist base's conversion status, ignore
+            // otherwise, delete the exist conversion status
+            if self.unique_ids[index].removed.get() {
                 return false;
             }
-            if e.converted != id.converted {
-                e.removed.set(true);
-                if e.converted {
-                    let i = match self.converted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
-                        Some(i) => i,
-                        None => return false,
-                    };
-                    let _ = self.converted_qualities.remove(i);
-                    return false;
+            if self.unique_ids[index].converted != base.converted {
+                self.unique_ids[index].removed.set(true);
+                if self.unique_ids[index].converted {
+                    for i in 0..self.converted_qualities.len() {
+                        if self.converted_qualities[i] == base.qual {
+                            self.converted_qualities.remove(i);
+                            return false;
+                        }
+                    }
                 } else {
-                    let i = match self.unconverted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
-                        Some(i) => i,
-                        None => return false,
-                    };
-                    let _ = self.unconverted_qualities.remove(i);
-                    return false;
+                    for i in 0..self.converted_qualities.len() {
+                        if self.unconverted_qualities[i] == base.qual {
+                            self.unconverted_qualities.remove(i);
+                            return false;
+                        }
+                    }
                 }
             }
-            false
+            return false;
         } else {
-            true
+            self.unique_ids.insert(
+                index,
+                UniqueID::new(a.read_name_id, base.converted, base.qual),
+            );
+            return true;
         }
+
+        // let id = UniqueID::new(a.read_name_id, base.converted, base.qual);
+        // let e = self.unique_ids.get_or_insert(id.clone());
+        // if e.converted != id.converted {
+        //     if e.removed.get() {
+        //         return false;
+        //     }
+        //     if e.converted != id.converted {
+        //         e.removed.set(true);
+        //         if e.converted {
+        //             let i = match self
+        //                 .converted_qualities
+        //                 .as_slice()
+        //                 .iter()
+        //                 .position(|ch| *ch == base.qual)
+        //             {
+        //                 Some(i) => i,
+        //                 None => return false,
+        //             };
+        //             let _ = self.converted_qualities.remove(i);
+        //             return false;
+        //         } else {
+        //             let i = match self
+        //                 .unconverted_qualities
+        //                 .as_slice()
+        //                 .iter()
+        //                 .position(|ch| *ch == base.qual)
+        //             {
+        //                 Some(i) => i,
+        //                 None => return false,
+        //             };
+        //             let _ = self.unconverted_qualities.remove(i);
+        //             return false;
+        //         }
+        //     }
+        //     false
+        // } else {
+        //     true
+        // }
     }
 
     pub fn append_base(&mut self, input: &PosQuality, a: &Alignment) {
@@ -107,6 +158,10 @@ impl Position {
             }
         }
     }
+}
+
+fn search_read_name_id(read_name_id: usize, arg: i32, id_count: usize) -> usize {
+    todo!()
 }
 
 pub struct PositionIter {
@@ -121,7 +176,13 @@ impl PositionIter {
     // location: pass in 0-based location
     //           internally use 1-based location
     pub fn new(dna: &'static AsciiStr, location: isize, seq: &'static AsciiStr) -> Self {
-        Self { dna, location: location + 1, seq, last_base: None, last_pos: None }
+        Self {
+            dna,
+            location: location + 1,
+            seq,
+            last_base: None,
+            last_pos: None,
+        }
     }
 }
 
@@ -135,7 +196,10 @@ impl Iterator for PositionIter {
                     self.seq = &self.seq[1..];
                     continue;
                 }
-                Some(AsciiChar::At) => { cold_path(); panic!("wrong ref parser impl") },
+                Some(AsciiChar::At) => {
+                    cold_path();
+                    panic!("wrong ref parser impl")
+                }
                 Some(ch) => {
                     let ch = ch.to_ascii_uppercase();
                     let mut p = Position::new();
@@ -165,7 +229,7 @@ impl Iterator for PositionIter {
                         return ret;
                     }
                 }
-                None => { 
+                None => {
                     cold_path();
                     match &self.last_pos {
                         Some(_) => {
