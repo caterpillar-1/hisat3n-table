@@ -1,12 +1,10 @@
-use ascii::{AsciiChar, AsciiStr, AsciiString, IntoAsciiString, ToAsciiChar};
-
+use crate::utils::{md_get_next_segment, ChunkIterator, CigarIterator, StringSearchState};
 use crate::ARGS;
 
 #[derive(Debug, Default)]
 pub struct PosQuality {
-    pub read_pos: isize,
     pub ref_pos: isize,
-    pub qual: AsciiChar,
+    pub qual: u8,
     pub converted: bool,
     pub remove: bool,
 }
@@ -14,68 +12,71 @@ pub struct PosQuality {
 impl PosQuality {
     pub fn new(pos: isize) -> Self {
         PosQuality {
-            read_pos: pos,
             ref_pos: pos,
             remove: true,
             ..Default::default()
         }
     }
 
-    pub fn set_qual(&mut self, qual: AsciiChar, converted: bool) {
+    pub fn set_qual(&mut self, qual: u8, converted: bool) {
         self.qual = qual;
         self.converted = converted;
         self.remove = false;
     }
 }
 
-pub struct Alignment {
-    pub dna: &'static AsciiStr,
+pub struct Alignment<'a> {
+    pub dna: &'a [u8],
     pub location: isize,
     pub mate_location: isize,
     pub flag: i32,
     pub mapped: bool,
-    pub strand: AsciiChar,
-    pub sequence: &'static AsciiStr,
-    pub quality: &'static AsciiStr,
+    pub strand: u8,
+    pub sequence: &'a [u8],
+    pub quality: &'a [u8],
     pub unique: bool,
-    pub map_q: &'static AsciiStr,
+    pub map_q: &'a [u8],
     pub nh: i32,
     pub bases: Vec<PosQuality>,
-    pub cigar: &'static AsciiStr,
-    pub md: &'static AsciiStr,
-    pub read_name_id: usize,
+    pub cigar: &'a [u8],
+    pub md: &'a [u8],
+    pub read_name_id: u64,
     pub sequence_covered_length: usize,
     pub overlap: bool,
     pub paired: bool,
 }
 
-impl TryFrom<&'static AsciiStr> for Alignment {
-    type Error = ();
+// static debugfile: std::sync::LazyLock<std::sync::Mutex<File>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(File::create("test2.check").unwrap()));
 
-    fn try_from(s: &'static AsciiStr) -> Result<Self, Self::Error> {
+impl<'a> Alignment<'a> {
+    pub(crate) fn from_file(data: &'a [u8])  -> Result<Self, ()> {
+        if data.len() < 1 || data[0] == b'@' {
+            return Err(());
+        }
         let mut a = Self::new();
 
-        let mut s = s.split('\t'.to_ascii_char().map_err(|_| ())?);
+        let iter = memchr::memchr_iter(b'\t', data);
+        let mut s = ChunkIterator::new(data, iter);
         // 0
-        a.read_name_id = Self::hash_name(s.next().ok_or(())?);
+        a.read_name_id = Self::name_hash_str(s.next().ok_or(())?);
         // 1
-        a.flag = s.next().ok_or(())?.as_str().parse().map_err(|_| ())?;
+        a.flag = atoi_simd::parse(s.next().ok_or(())?).map_err(|_| ())?;
         a.mapped = (a.flag & 4) == 0;
         a.paired = (a.flag & 1) != 0;
 
         // 2
         a.dna = s.next().ok_or(())?;
         // 3
-        a.location = s.next().ok_or(())?.as_str().parse().map_err(|_| ())?;
+        a.location = atoi_simd::parse(s.next().ok_or(())?).map_err(|_| ())?;
         // 4
         a.map_q = s.next().ok_or(())?;
-        a.unique = a.map_q != "1".into_ascii_string().map_err(|_| ())?;
+        a.unique = a.map_q != b"1";
         // 5
         a.cigar = s.next().ok_or(())?;
         // 6
         s.next().ok_or(())?;
         // 7
-        a.mate_location = s.next().ok_or(())?.as_str().parse().map_err(|_| ())?;
+        a.mate_location = atoi_simd::parse(s.next().ok_or(())?).map_err(|_| ())?;
         // 8
         s.next().ok_or(())?;
         // 9
@@ -84,27 +85,22 @@ impl TryFrom<&'static AsciiStr> for Alignment {
         a.quality = s.next().ok_or(())?;
         // > 10
         while let Some(s) = s.next() {
-            let ss = s.as_str();
-            if ss.starts_with("MD") {
+            if s.starts_with(b"MD") {
                 a.md = &s[5..];
-            } else if ss.starts_with("NM") {
-                a.nh = (&ss[5..]).parse().map_err(|_| ())?;
-            } else if ss.starts_with("YZ") {
-                a.strand = s.last().ok_or(())?;
+            } else if s.starts_with(b"NM") {
+                a.nh = atoi_simd::parse(&s[5..]).map_err(|_| ())?;
+            } else if s.starts_with(b"YZ") {
+                a.strand = *s.last().ok_or(())?;
             }
         }
 
         if (ARGS.unique_only && !a.unique) || (ARGS.multiple_only && a.unique) {
             return Ok(a);
         }
-
         a.append_base();
-
         Ok(a)
     }
-}
 
-impl Alignment {
     fn new() -> Self {
         Self {
             dna: Default::default(),
@@ -128,158 +124,59 @@ impl Alignment {
         }
     }
 
-    fn hash_name(name: &AsciiStr) -> usize {
-        let mut r: usize = 0;
-        let a: usize = 63689;
-        for i in 0..name.len() {
-            r = (r.wrapping_mul(a)).wrapping_mul(name[i] as usize);
+    pub fn name_hash_str(name: &[u8]) -> u64 {
+        let mut hash: u64 = 0;
+        let a: u64 = 63689;
+        for byte in name {
+            let byte_val = *byte as u64;
+            hash = hash.wrapping_mul(a).wrapping_add(byte_val);
         }
-        r
+        hash
     }
 
-    fn cigar_get_next_segment(
-        cigar_string: &AsciiStr,
-        start: &mut usize,
-        str_len: usize,
-        len: &mut usize,
-        symbol: &mut AsciiChar,
-    ) -> bool {
-        if *start == str_len {
-            return false;
-        }
-        *len = 0;
-        let mut current_index = *start;
-        loop {
-            if cigar_string[current_index].is_ascii_alphabetic() {
-                *len = (&cigar_string[*start..current_index])
-                    .as_str()
-                    .parse()
-                    .unwrap();
-                *symbol = cigar_string[current_index];
-                *start = current_index + 1;
-                return true;
-            }
-            current_index += 1;
-        }
-    }
-
-    fn md_get_next_segment(
-        md_string: &AsciiStr,
-        start: &mut usize,
-        str_len: usize,
-        seg: &mut AsciiString,
-    ) -> bool {
-        if *start >= str_len {
-            return false;
-        }
-        seg.clear();
-        let mut current_index = *start;
-        let mut deletion = false;
-
-        loop {
-            if current_index >= str_len {
-                *start = current_index + 1;
-                return !seg.is_empty();
-            }
-            if seg.is_empty() && md_string[current_index] == '0' {
-                current_index += 1;
-                continue;
-            }
-            if md_string[current_index].is_alphabetic() {
-                if seg.is_empty() {
-                    *seg = md_string[current_index].into();
-                    *start = current_index + 1;
-                    return true;
-                } else {
-                    if deletion {
-                        (*seg).push(md_string[current_index]);
-                    } else {
-                        *start = current_index;
-                        return true;
-                    }
-                }
-            } else if md_string[current_index] == '^' {
-                if seg.is_empty() {
-                    *seg = md_string[current_index].into();
-                    deletion = true;
-                } else {
-                    *start = current_index;
-                    return true;
-                }
-            } else {
-                // number
-                if seg.is_empty() {
-                    *seg = md_string[current_index].into();
-                } else {
-                    if deletion || seg.last().unwrap().is_alphabetic() {
-                        *start = current_index;
-                        return true;
-                    } else {
-                        seg.push(md_string[current_index]);
-                    }
-                }
-            }
-            current_index += 1;
-        }
-    }
-
-    fn adjust_pos(&mut self) -> isize {
+    fn adjust_pos(&mut self) -> usize {
         let mut read_pos = 0;
         let mut return_pos = 0;
         let seq_length = self.sequence.len();
-
-        let mut cigar_symbol: AsciiChar = Default::default();
-        let mut cigar_len = 0;
         self.sequence_covered_length = 0;
-
-        let mut cigar_start = 0;
-        let cigar_str_len = self.cigar.len();
-
-        while Self::cigar_get_next_segment(
-            self.cigar,
-            &mut cigar_start,
-            cigar_str_len,
-            &mut cigar_len,
-            &mut cigar_symbol,
-        ) {
+        for (cigar_len, symbol) in CigarIterator::new(self.cigar) {
             self.sequence_covered_length += cigar_len;
-            match cigar_symbol {
-                AsciiChar::S => {
+            match symbol {
+                b'S' => {
                     if read_pos == 0 {
                         return_pos = cigar_len;
                         for i in cigar_len..seq_length {
                             self.bases[i].ref_pos -= cigar_len as isize;
                         }
-                    } else {
                     }
                     read_pos += cigar_len;
                 }
-                AsciiChar::N => {
+                b'N' => {
                     for i in read_pos..seq_length {
                         self.bases[i].ref_pos += cigar_len as isize;
                     }
                 }
-                AsciiChar::M => {
+                b'M' => {
                     for i in read_pos..(read_pos + cigar_len) {
                         self.bases[i].remove = false;
                     }
                     read_pos += cigar_len;
                 }
-                AsciiChar::I => {
+                b'I' => {
                     for i in (read_pos + cigar_len)..seq_length {
                         self.bases[i].ref_pos -= cigar_len as isize;
                     }
                     read_pos += cigar_len;
                 }
-                AsciiChar::D => {
+                b'D' => {
                     for i in read_pos..seq_length {
                         self.bases[i].ref_pos += cigar_len as isize;
                     }
-                }
-                _ => (),
+                },
+                _ => {}
             }
         }
-        return return_pos as isize;
+        return_pos
     }
 
     fn append_base(&mut self) {
@@ -295,21 +192,19 @@ impl Alignment {
             self.bases.push(PosQuality::new(i as isize));
         }
 
-        let mut pos = self.adjust_pos() as usize;
-
-        let mut md_start = 0;
-        let md_str_len = self.md.len();
-        let mut seg = AsciiString::new();
-        while Self::md_get_next_segment(self.md, &mut md_start, md_str_len, &mut seg) {
+        let mut pos = self.adjust_pos();
+        let mut search = StringSearchState::new(self.md);
+        let mut seg = Vec::<u8>::new();
+        while md_get_next_segment(&mut search, &mut seg) {
             let ref_base = seg.first().unwrap();
             if ref_base.is_ascii_digit() {
-                let len: usize = seg.as_str().parse().unwrap();
+                let len: usize = atoi_simd::parse(seg.as_slice()).unwrap();
                 for _ in 0..len {
                     while self.bases[pos].remove {
                         pos += 1;
                     }
-                    if self.strand == '+' && self.sequence[pos] == ARGS.base_change.0.0
-                        || self.strand == '-' && self.sequence[pos] == ARGS.base_change.0.1
+                    if self.strand == b'+' && self.sequence[pos] == ARGS.base_change.0.0
+                      || self.strand == b'-' && self.sequence[pos] == ARGS.base_change.0.1
                     {
                         self.bases[pos].set_qual(self.quality[pos], false);
                     } else {
@@ -317,68 +212,19 @@ impl Alignment {
                     }
                     pos += 1;
                 }
-            } else if ref_base.is_alphabetic() {
+            } else if ref_base.is_ascii_alphabetic() {
                 while self.bases[pos].remove {
                     pos += 1;
                 }
-
-                if (self.strand == '+'
-                    && ref_base == ARGS.base_change.0.0
-                    && self.sequence[pos] == ARGS.base_change.1.0)
-                    || (self.strand == '-'
-                        && ref_base == ARGS.base_change.0.1
-                        && self.sequence[pos] == ARGS.base_change.1.1)
+                if self.strand == b'+' && *ref_base == ARGS.base_change.0.0 && self.sequence[pos] == ARGS.base_change.1.0
+                  || self.strand == b'-' && *ref_base == ARGS.base_change.0.1 && self.sequence[pos] == ARGS.base_change.1.1
                 {
                     self.bases[pos].set_qual(self.quality[pos], true);
                 } else {
                     self.bases[pos].remove = true;
                 }
                 pos += 1;
-            } else {
             }
         }
     }
 }
-
-pub struct AlignmentIter {
-    lines: Box<dyn DoubleEndedIterator<Item = &'static AsciiStr>>,
-}
-
-impl AlignmentIter {
-    pub fn new(text: &'static AsciiStr) -> Self {
-        Self {
-            lines: Box::new(text.lines()),
-        }
-    }
-}
-
-impl Iterator for AlignmentIter {
-    type Item = Alignment;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.lines.next() {
-                Some(line) => {
-                    match line.first() {
-                        None | Some(AsciiChar::At) => continue,
-                        _ => (),
-                    }
-                    let a = match Alignment::try_from(line) {
-                        Ok(a) => a,
-                        Err(_) => {
-                            eprintln!("'{}' is not a valid Alignment.", line);
-                            continue;
-                        }
-                    };
-                    if !a.mapped || a.bases.is_empty() {
-                        continue;
-                    }
-                    return Some(a);
-                }
-                None => return None,
-            }
-        }
-    }
-}
-
-unsafe impl Send for AlignmentIter {}
