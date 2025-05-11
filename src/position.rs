@@ -68,7 +68,7 @@ impl<'a> Position<'a> {
                             }
                         }
                     } else {
-                        for i in 0..self.converted_qualities.len() {
+                        for i in 0..self.unconverted_qualities.len() {
                             if self.unconverted_qualities[i] == in_base.qual {
                                 self.unconverted_qualities.remove(i);
                                 return false;
