@@ -3,8 +3,8 @@ use std::{collections::HashMap, fs::File, path::PathBuf};
 use anyhow::Result;
 use ascii::{AsAsciiStr, AsciiChar, AsciiStr, AsciiString, IntoAsciiString};
 use memmap2::Mmap;
-use serde::{Serialize, Deserialize};
-use rmp_serde::{Serializer, Deserializer};
+use serde::{Serialize};
+use rmp_serde::{Serializer};
 
 use clap::Parser;
 
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
         let ref_file: &'static File = Box::leak(ref_file);
         let ref_map = Box::new(unsafe {
             let mmap = Mmap::map(ref_file)?;
-            mmap.advise(memmap2::Advice::Sequential)?;
+            // mmap.advise(memmap2::Advice::Sequential)?;
             mmap
         });
         Box::leak(ref_map).as_ascii_str()?
