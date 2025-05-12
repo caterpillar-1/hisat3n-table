@@ -113,13 +113,13 @@ struct Arguments {
     threads: usize,
     #[arg(
         long,
-        default_value_t = 20000,
+        default_value_t = 20000000,
         help = "max number of Alignment record lines in a Task (20000)",
     )]
     align_block_size: usize,
     #[arg(
         long,
-        default_value_t = 20000,
+        default_value_t = 20000000,
         help = "max number of chromosome Position s in a Task (20000)",
     )]
     ref_block_size: usize,
