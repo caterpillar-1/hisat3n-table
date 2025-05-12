@@ -1,8 +1,4 @@
-use std::ops::Index;
-use std::{cell::Cell, collections::HashSet, hash::Hash};
-use std::hint::{likely, unlikely, cold_path};
-
-use ascii::{AsAsciiStr, AsciiChar, AsciiStr, AsciiString};
+use std::{collections::BTreeMap, hint::cold_path};
 
 use crate::{
     ARGS,
@@ -11,90 +7,77 @@ use crate::{
 
 #[derive(Default, Debug, Clone)]
 pub struct UniqueID {
-    pub read_name_id: usize,
+    pub read_name_id: u64,
     pub converted: bool,
-    pub quality: AsciiChar,
-    pub removed: Cell<bool>,
+    pub quality: u8,
+    pub removed: bool,
 }
 
 impl UniqueID {
-    fn new(read_name_id: usize, converted: bool, quality: AsciiChar) -> Self {
+    fn new(read_name_id: u64, converted: bool, quality: u8) -> Self {
         Self {
             read_name_id,
             converted,
             quality,
-            removed: Cell::new(false),
+            removed: false,
         }
     }
 }
 
-impl Hash for UniqueID {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.read_name_id.hash(state);
-    }
-}
-
-impl PartialEq for UniqueID {
-    fn eq(&self, other: &Self) -> bool {
-        self.read_name_id == other.read_name_id
-    }
-}
-
-impl Eq for UniqueID {}
-
-pub struct Position {
-    pub dna: &'static AsciiStr,
+pub struct Position<'a> {
+    pub dna: &'a [u8],
     pub location: isize,
-    pub strand: Option<AsciiChar>,
-    pub converted_qualities: AsciiString,
-    pub unconverted_qualities: AsciiString,
-    pub unique_ids: HashSet<UniqueID>,
+    pub strand: Option<u8>,
+    pub converted_qualities: Vec<u8>,
+    pub unconverted_qualities: Vec<u8>,
+    pub unique_ids: BTreeMap<u64, UniqueID>,
 }
 
-impl Position {
-    pub fn new() -> Self {
+impl<'a> Position<'a> {
+    pub fn new(dna: &'a [u8], location: isize) -> Self {
         Self {
-            dna: Default::default(),
-            location: -1,
+            dna,
+            location,
             strand: None,
-            converted_qualities: AsciiString::new(),
-            unconverted_qualities: AsciiString::new(),
-            unique_ids: HashSet::default(),
+            converted_qualities: Vec::new(),
+            unconverted_qualities: Vec::new(),
+            unique_ids: BTreeMap::new(),
         }
     }
 
-    pub fn empty(&self) -> bool {
-        self.converted_qualities.is_empty() && self.unconverted_qualities.is_empty()
-    }
-
-    fn append_read_name_id(&mut self, base: &PosQuality, a: &Alignment) -> bool {
-        let id = UniqueID::new(a.read_name_id, base.converted, base.qual);
-        let e = self.unique_ids.get_or_insert(id.clone());
-        if e.converted != id.converted {
-            if e.removed.get() {
-                return false;
-            }
-            if e.converted != id.converted {
-                e.removed.set(true);
-                if e.converted {
-                    let i = match self.converted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
-                        Some(i) => i,
-                        None => return false,
-                    };
-                    let _ = self.converted_qualities.remove(i);
-                    return false;
-                } else {
-                    let i = match self.unconverted_qualities.as_slice().iter().position(|ch| *ch == base.qual) {
-                        Some(i) => i,
-                        None => return false,
-                    };
-                    let _ = self.unconverted_qualities.remove(i);
+    fn append_read_name_id(&mut self, in_base: &PosQuality, in_align: &Alignment) -> bool {
+        match self.unique_ids.entry(in_align.read_name_id) {
+            std::collections::btree_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(UniqueID::new(in_align.read_name_id, in_base.converted, in_base.qual));
+                return true;
+            },
+            std::collections::btree_map::Entry::Occupied(mut occupied_entry) => {
+                let ent = occupied_entry.get_mut();
+                // if the new base is consistent with exist base's conversion status, ignore
+                // otherwise, delete the exist conversion status
+                if ent.removed {
                     return false;
                 }
-            }
-            false
-        } else {
-            true
+                if ent.converted != in_base.converted {
+                    ent.removed = true;
+                    if ent.converted {
+                        for i in 0..self.converted_qualities.len() {
+                            if self.converted_qualities[i] == in_base.qual {
+                                self.converted_qualities.remove(i);
+                                return false;
+                            }
+                        }
+                    } else {
+                        for i in 0..self.unconverted_qualities.len() {
+                            if self.unconverted_qualities[i] == in_base.qual {
+                                self.unconverted_qualities.remove(i);
+                                return false;
+                            }
+                        }
+                    }
+                }
+                return false;
+            },
         }
     }
 
@@ -109,73 +92,31 @@ impl Position {
     }
 }
 
-pub struct PositionIter {
-    dna: &'static AsciiStr,
-    location: isize,
-    seq: &'static AsciiStr, // file text, can contain blank spaces
-    last_base: Option<AsciiChar>,
-    last_pos: Option<Position>,
-}
-
-impl PositionIter {
-    // location: pass in 0-based location
-    //           internally use 1-based location
-    pub fn new(dna: &'static AsciiStr, location: isize, seq: &'static AsciiStr) -> Self {
-        Self { dna, location: location + 1, seq, last_base: None, last_pos: None }
-    }
-}
-
-impl Iterator for PositionIter {
-    type Item = Position;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.seq.first() {
-                Some(AsciiChar::CarriageReturn | AsciiChar::LineFeed | AsciiChar::Space) => {
-                    self.seq = &self.seq[1..];
-                    continue;
-                }
-                Some(AsciiChar::At) => { cold_path(); panic!("wrong ref parser impl") },
-                Some(ch) => {
-                    let ch = ch.to_ascii_uppercase();
-                    let mut p = Position::new();
-                    p.dna = self.dna;
-                    p.location = self.location;
-                    self.location += 1;
-                    if ARGS.cg_only {
-                        if matches!(self.last_base, Some(AsciiChar::C))
-                            && matches!(ch, AsciiChar::G)
-                        {
-                            self.last_pos.as_mut().unwrap().strand = Some(AsciiChar::Plus);
-                            p.strand = Some(AsciiChar::Minus);
-                        }
-                    } else {
-                        if ch == ARGS.base_change.0.0 {
-                            p.strand = Some(AsciiChar::Plus);
-                        } else if ch == ARGS.base_change.0.1 {
-                            p.strand = Some(AsciiChar::Minus);
-                        }
-                    }
-                    self.last_base = Some(ch);
-                    self.seq = &self.seq[1..];
-                    let ret = std::mem::replace(&mut self.last_pos, Some(p));
-                    if ret.is_none() {
-                        continue;
-                    } else {
-                        return ret;
-                    }
-                }
-                None => { 
-                    cold_path();
-                    match &self.last_pos {
-                        Some(_) => {
-                            let _ = std::mem::replace(&mut self.last_base, None);
-                            return std::mem::replace(&mut self.last_pos, None);
-                        }
-                        None => return None,
-                    }
-                }
+pub fn fill_positions<'a>(positions: &mut Vec<Position<'a>>, text: &'a [u8], dna: &'a [u8],
+                          start_pos: usize, end_pos: usize) {
+    positions.reserve(end_pos - start_pos);
+    let mut last_base = 0u8;
+    for i in start_pos..end_pos {
+        if i >= text.len() {
+            break;
+        }
+        let ch = text[i - 1];
+        assert!(ch.is_ascii_alphabetic());
+        let mut p = Position::new(dna, i as isize);
+        if ARGS.cg_only {
+            cold_path();
+            if last_base == b'C' && ch == b'G' {
+                positions.last_mut().unwrap().strand = Some(b'+');
+                p.strand = Some(b'-');
+            }
+        } else {
+            if ch == ARGS.base_change.0.0 {
+                p.strand = Some(b'+');
+            } else if ch == ARGS.base_change.0.1 {
+                p.strand = Some(b'-');
             }
         }
+        positions.push(p);
+        last_base = ch;
     }
 }
