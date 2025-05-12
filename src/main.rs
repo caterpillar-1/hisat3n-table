@@ -14,13 +14,13 @@ mod utils;
 
 use position::{fill_positions, Position};
 use rmp_serde::from_read;
-use task::TaskResult;
+use task::{scan_alignment_segments, TaskResult};
 use utils::asc2dnacomp;
 
 use std::{hint::cold_path, path::Path, sync::{mpsc, LazyLock}};
 use anyhow::Result;
 use memmap2::{Advice, Mmap};
-use rayon::{iter::{ParallelBridge, ParallelIterator}, ThreadPoolBuilder};
+use rayon::{iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator}, ThreadPoolBuilder};
 use clap::Parser;
 
 use std::{fs::File, path::PathBuf};
@@ -200,13 +200,15 @@ fn main() -> Result<()> {
     ThreadPoolBuilder::new().num_threads(ARGS.threads).build_global()?;
 
     let (tx, rx) = mpsc::channel();
-    let tasks = TaskIter2::new(&ALIGN_FILE);
+    let dna_align_segments: Vec<(&[u8], std::ops::Range<usize>)> = scan_alignment_segments(&ALIGN_FILE);
 
     std::thread::spawn(move || {
         let tx = tx.clone();
-        tasks.into_iter().par_bridge().map(worker2).for_each(|positions| {
-            tx.send(Some(positions)).unwrap();
-        });
+        dna_align_segments
+            .par_iter()
+            .flat_map(|(_, r)| TaskIter2::new(&ALIGN_FILE[r.start..r.end]).par_bridge())
+            .map(worker2)
+            .for_each(|positions| { tx.send(Some(positions)).unwrap(); });
         
         tx.send(None).unwrap();
     });

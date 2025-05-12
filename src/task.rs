@@ -4,6 +4,7 @@ use std::hint::cold_path;
 use std::ops::Range;
 
 use crate::alignment::Alignment;
+use crate::DNAS;
 use crate::{
     position::Position,
     ARGS,
@@ -98,4 +99,31 @@ impl<'a> Iterator for TaskIter2<'a> {
             })
         }
     }
+}
+
+pub fn scan_alignment_segments<'a>(src: &'a [u8]) -> Vec<(&'a [u8], Range<usize>)> {
+    let iter = memchr::memchr_iter(b'\n', src);
+    let mut current_name: &'a [u8] = &src[0..0];
+    let mut chunk_start = 0;
+    let mut line_start = 0;
+    let mut result: Vec<(&'a [u8], Range<usize>)> = Vec::new();
+    for line_end in iter {
+        if src[line_start] == b'@' { 
+            line_start = line_end + 1;
+            continue 
+        }
+        let mut t = memchr::memchr_iter(b'\t', &src[line_start..line_end]);
+        if let (Some(a), Some(b)) = (t.nth(1), t.next()) {
+            let name = &src[(line_start + a + 1)..(line_start + b)];
+            if name != current_name {
+                if !current_name.is_empty() && DNAS.contains_key(current_name) {
+                    result.push((current_name, chunk_start..line_start));
+                }
+                current_name = name;
+                chunk_start = line_start;
+            }
+        }
+        line_start = line_end + 1;
+    }
+    result
 }
