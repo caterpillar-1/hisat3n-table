@@ -1,178 +1,129 @@
 // we use term dna instead of chromosome in this module
 
-use core::slice;
-use std::{
-    assert_matches::assert_matches, collections::HashMap, fmt::Debug, fs::File, hint::{cold_path, likely, unlikely}, ops::Range, ptr::dangling, task
-};
+use std::hint::cold_path;
+use std::ops::Range;
 
-use ascii::{AsciiChar, AsciiStr, AsciiString, IntoAsciiString};
-use named_tuple::named_tuple;
-
-use crate::{
-    ARGS,
-    alignment::AlignmentIter,
-    position::{Position, PositionIter},
-};
-
+use crate::alignment::Alignment;
 use crate::DNAS;
+use crate::{
+    position::Position,
+    ARGS,
+};
 
-pub struct Task {
-    pub dna_name: &'static AsciiStr,
-    pub alignments: AlignmentIter,
-    pub alignment_count: usize,
+pub struct Task2<'a> {
+    pub dna_name: &'a [u8],
+    pub alignments: Vec<Alignment<'a>>,
     pub position_range: Range<usize>,
 }
 
-impl Debug for Task {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Task").field("dna", &self.dna_name).field("alignment_count", &self.alignment_count).field("position_range", &self.position_range).finish()
+pub type TaskResult<'a> = Option<Vec<Position<'a>>>;
+
+pub struct TaskIter2<'a> {
+    src: &'a [u8],
+    current_position: usize,
+}
+
+impl<'a> TaskIter2<'a> {
+    pub fn new(src: &'a [u8]) -> Self {
+        Self {
+            src,
+            current_position: 0,
+        }
     }
 }
 
-pub type TaskResult = Option<Vec<Position>>;
+impl<'a> Iterator for TaskIter2<'a> {
+    type Item = Task2<'a>;
 
-pub type DnaIndex = HashMap<AsciiString, AsciiString>;
-
-pub struct TaskIter {
-    /* files */
-    align_lines: Box<dyn Iterator<Item = &'static AsciiStr> + Send>,
-    // the next align_line is stored only when next is returning the current Task and need
-    // to place the peeked align_line
-    peeked_align_line: Option<&'static AsciiStr>,
-    current_dna: Option<&'static AsciiStr>,
-}
-
-
-impl TaskIter {
-    fn get_dna_location(align_line: &AsciiStr) -> Option<(&AsciiStr, isize)> {
-        if align_line.is_empty() || align_line.first().unwrap() == '@' {
+    #[inline(never)]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_position >= self.src.len() {
             return None;
         }
-        let mut res: (&AsciiStr, isize) = Default::default();
-        let mut parts = align_line.split(AsciiChar::Tab);
-        match parts.nth(2) {
-            Some(chr) => {
-                res.0 = chr;
-            }
-            None => return None,
-        }
-        match parts.next() {
-            Some(chr) => {
-                if chr.as_str() == "*" {
-                    return None;
-                } else {
-                    res.1 = chr.as_str().parse().unwrap();
-                }
-            }
-            None => return None,
-        }
-        Some(res)
-    }
+        let chunk_start = self.current_position;
+        let lines = memchr::memchr_iter(b'\n', &self.src[chunk_start..]);
+        let mut line_start = chunk_start;
+        let mut current_dna_name = &self.src[0..0];
+        let mut current_chunk_beginning_pos = usize::MAX;
+        let mut current_chunk_end_pos = usize::MAX;
+        let mut n = 0;
+        let mut chunk_end: usize = 0;
+        let mut alignments: Vec<Alignment<'a>> = Vec::new();
+        for line_feed_pos in lines {
+            let actual_feed_pos = chunk_start + line_feed_pos;
+            let line = &self.src[line_start..actual_feed_pos];
+            line_start = actual_feed_pos + 1;
+            let alignment = match Alignment::from_file(line) {
+                Ok(alignment) => alignment,
+                Err(_) => continue,
+            };
+            let seq_len: usize = alignment.bases.iter().map(|it| it.ref_pos).max().unwrap_or(alignment.sequence.len() as isize).try_into().unwrap();
+            let pos = alignment.location as usize;
 
-    fn get_dna_name(info_line: &AsciiStr) -> AsciiString {
-        assert_eq!(info_line.first().unwrap(), AsciiChar::GreaterThan);
-        let info_line = &info_line[1..];
-        info_line
-            .as_str()
-            .split_ascii_whitespace()
-            .next()
-            .unwrap()
-            .into_ascii_string()
-            .unwrap()
-    }
+            if current_dna_name.len() == 0 {
+                cold_path();
+                current_dna_name = alignment.dna;
+            } else if current_dna_name != alignment.dna {
+                break; // 更换 ref 文件，放回当前行
+            }
+            if current_chunk_beginning_pos == usize::MAX {
+                cold_path();
+                current_chunk_beginning_pos = pos;
+                current_chunk_end_pos = pos + seq_len + 1;
+            } else if pos - current_chunk_beginning_pos > ARGS.ref_block_size && pos > current_chunk_end_pos {
+                break; // 当前 chunk 过大，放回当前行
+            }
+            if n >= ARGS.align_block_size && pos > current_chunk_end_pos {
+                break; // // 当前 chunk 过大，放回当前行
+                // 注意必须保证各个段之间即使算上 location ~bases~ 延申之后还没有任何重叠！
+                // 并且还不能紧密连接，因此这里是大于不是大于等于，因为下一个碱基可能影响上一个的 strand
+            }
+            current_chunk_end_pos = std::cmp::max(current_chunk_end_pos, pos + seq_len + 1); // 因此如果还在重叠区间内就不能分割
 
-    pub fn new(align_file: &'static AsciiStr) -> Self {
-        Self {
-            align_lines: Box::new(align_file.lines()),
-            peeked_align_line: None,
-            current_dna: None,
+            n += 1;
+            chunk_end = line_start;
+            alignments.push(alignment);
+            if line_start >= self.src.len() {
+                break;
+            }
+        }
+        self.current_position = chunk_end;
+        if current_dna_name.len() == 0 || current_chunk_beginning_pos == usize::MAX {
+            None
+        } else {
+            // eprintln!("fn {} position range {} - {}, size {}", str::from_utf8(&current_dna_name).unwrap(), current_chunk_beginning_pos, current_chunk_end_pos, current_chunk_end_pos - current_chunk_beginning_pos);
+            Some(Task2 {
+                dna_name: current_dna_name,
+                alignments,
+                position_range: current_chunk_beginning_pos .. current_chunk_end_pos,
+            })
         }
     }
 }
 
-impl Iterator for TaskIter {
-    type Item = Task;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // we construct a Task from self.dna and these two components
-        // 3 components
-        let mut task_dna: Option<&'static AsciiStr> = None;
-        let mut align_text: Option<Range<*const AsciiChar>> = None;
-
-        // Alignment (line) s in this chunk
-        let mut align_count = 0usize;
-        // Position (non-blank char) s in this chunk
-        let mut position_range: Range<isize> = 0..0;
-
-        fn task_from_components(task_dna: Option<&'static AsciiStr>, align_text: Option<Range<*const AsciiChar>>, align_count: usize, position_range: Range<isize>) -> Task {
-            let align_iter = AlignmentIter::new(unsafe {slice::from_ptr_range(align_text.unwrap()).into() });
-            let task = Task {
-                dna_name: task_dna.unwrap(),
-                alignments: align_iter,
-                alignment_count: align_count,
-                position_range: (position_range.start as usize .. position_range.end as usize),
-            };
-            // eprintln!("{:?}", task);
-            return task;
+pub fn scan_alignment_segments<'a>(src: &'a [u8]) -> Vec<(&'a [u8], Range<usize>)> {
+    let iter = memchr::memchr_iter(b'\n', src);
+    let mut current_name: &'a [u8] = &src[0..0];
+    let mut chunk_start = 0;
+    let mut line_start = 0;
+    let mut result: Vec<(&'a [u8], Range<usize>)> = Vec::new();
+    for line_end in iter {
+        if src[line_start] == b'@' { 
+            line_start = line_end + 1;
+            continue 
         }
-
-        loop {
-            // this condition is satisfied when next lines of code fills self.current_dna with some content
-            if align_count >= ARGS.align_block_size || position_range.len() >= ARGS.ref_block_size {
-                // soft split
-                cold_path();
-                return Some(task_from_components(task_dna, align_text, align_count, position_range));
-            }
-
-            let align_line = match self.peeked_align_line {
-                Some(l) => {
-                    // process first line of alignment chunks rather than the first Alignment of the file
-                    self.peeked_align_line = None;
-                    l
+        let mut t = memchr::memchr_iter(b'\t', &src[line_start..line_end]);
+        if let (Some(a), Some(b)) = (t.nth(1), t.next()) {
+            let name = &src[(line_start + a + 1)..(line_start + b)];
+            if name != current_name {
+                if !current_name.is_empty() && DNAS.contains_key(current_name) {
+                    result.push((current_name, chunk_start..line_start));
                 }
-                None => {
-                    match self.align_lines.next() {
-                        Some(l) => l,
-                        None => {
-                            cold_path();
-                            match align_text {
-                                Some(_) => {
-                                    return Some(task_from_components(task_dna, align_text, align_count, position_range));
-                                }
-                                None => {
-                                    eprintln!("Assignment Done!");
-                                    return None;
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-
-            let (align_dna, align_location) = match Self::get_dna_location(align_line) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if task_dna.is_none() {
-                cold_path();
-
-                task_dna = Some(align_dna);
-                align_text = Some(align_line.as_slice().as_ptr_range());
-                align_count = 1;
-                position_range = align_location..align_location + 1;
-            } else {
-                if task_dna.unwrap() != align_dna {
-                    // hard split                    
-                    self.peeked_align_line = Some(align_line);
-
-                    return Some(task_from_components(task_dna, align_text, align_count, position_range));
-                } else {
-                    align_text.as_mut().unwrap().end = align_line.as_slice().as_ptr_range().end;
-                    align_count += 1;
-                    position_range.end = align_location + 1;
-                }
+                current_name = name;
+                chunk_start = line_start;
             }
         }
+        line_start = line_end + 1;
     }
+    result
 }

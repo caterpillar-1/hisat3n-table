@@ -14,6 +14,10 @@ thiserror = "2"
 named_tuple = "0.1"
 serde = { version = "1", features = ["derive"]}
 rmp-serde = { version = "1.3" }
+memchr = "2.7.4"
+# atoi = "2.0.0"
+atoi_simd = "0.16.0"
+ahash = "0.8.12"
 
 [profile.release]
 opt-level = 3
