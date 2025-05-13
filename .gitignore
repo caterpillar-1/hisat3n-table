@@ -8,3 +8,4 @@
 !/crates
 
 !*.rs
+!/README.md
