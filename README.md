@@ -83,4 +83,4 @@ The command line arguments is almost the same as the original version. Run with 
 
 ## Acknoledgement
 
-Thanks chariri ([cqjjjzr](https://github.com/cqjjjzr)) for rewriting the modified version of the algorithm.
+We would like to extend our gratitude to chariri ([cqjjjzr](https://github.com/cqjjjzr)) for his effort in fixing the bugs and rewriting the optimized program.
