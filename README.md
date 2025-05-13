@@ -59,7 +59,7 @@ The command line arguments is almost the same as the original version. Run with 
             }
             if (uniqueIDs[middle].readNameID > readNameID) {
                 // ATTENTION HERE!
-                // should be searchReadNameID(readNameID, start, middle-1)
+                // should be searchReadNameID(readNameID, start, middle)
                 return searchReadNameID(readNameID, start, middle-1);
             }
             return searchReadNameID(readNameID, middle+1, end);
